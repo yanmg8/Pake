@@ -58,8 +58,27 @@ pub fn set_window(app: &mut App, config: &PakeConfig, tauri_config: &Config) -> 
         .visible(false)
         .user_agent(user_agent)
         .resizable(window_config.resizable)
-        .maximized(window_config.maximize)
-        .inner_size(window_config.width, window_config.height)
+        .maximized(window_config.maximize);
+
+    #[cfg(target_os = "windows")]
+    {
+        let scale_factor = app
+            .primary_monitor()
+            .ok()
+            .flatten()
+            .map(|m| m.scale_factor())
+            .unwrap_or(1.0);
+        let logical_width = window_config.width / scale_factor;
+        let logical_height = window_config.height / scale_factor;
+        window_builder = window_builder.inner_size(logical_width, logical_height);
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        window_builder = window_builder.inner_size(window_config.width, window_config.height);
+    }
+
+    window_builder = window_builder
         .always_on_top(window_config.always_on_top)
         .incognito(window_config.incognito);
 
@@ -104,7 +123,7 @@ pub fn set_window(app: &mut App, config: &PakeConfig, tauri_config: &Config) -> 
     #[cfg(target_os = "windows")]
     let mut windows_browser_args = String::from("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --disable-blink-features=AutomationControlled");
 
-    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+    #[cfg(target_os = "linux")]
     let mut linux_browser_args = String::from("--disable-blink-features=AutomationControlled");
 
     if window_config.ignore_certificate_errors {
@@ -113,7 +132,7 @@ pub fn set_window(app: &mut App, config: &PakeConfig, tauri_config: &Config) -> 
             windows_browser_args.push_str(" --ignore-certificate-errors");
         }
 
-        #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+        #[cfg(target_os = "linux")]
         {
             linux_browser_args.push_str(" --ignore-certificate-errors");
         }
@@ -131,7 +150,7 @@ pub fn set_window(app: &mut App, config: &PakeConfig, tauri_config: &Config) -> 
             windows_browser_args.push_str(" --enable-unsafe-webgpu");
         }
 
-        #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+        #[cfg(target_os = "linux")]
         {
             linux_browser_args.push_str(" --enable-features=SharedArrayBuffer");
             linux_browser_args.push_str(" --enable-unsafe-webgpu");
@@ -189,7 +208,7 @@ pub fn set_window(app: &mut App, config: &PakeConfig, tauri_config: &Config) -> 
             window_builder = window_builder.additional_browser_args(&windows_browser_args);
         }
 
-        #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+        #[cfg(target_os = "linux")]
         {
             window_builder = window_builder.additional_browser_args(&linux_browser_args);
         }
