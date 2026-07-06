@@ -822,7 +822,7 @@ async function writeAllConfigs(tauriConf, platform) {
 }
 async function mergeConfig(url, options, tauriConf) {
     await copyTemplateConfigs();
-    const { appVersion, userAgent, showSystemTray, useLocalFile, identifier, name = 'pake-app', installerLanguage, wasm, camera, microphone, } = options;
+    const { appVersion, userAgent, appToken, showSystemTray, useLocalFile, identifier, name = 'pake-app', installerLanguage, wasm, camera, microphone, } = options;
     const platform = asSupportedPlatform(process.platform);
     if (options.hideTitleBar && platform !== 'darwin') {
         logger.warn('✼ --hide-title-bar is only supported on macOS and will be ignored on this platform.');
@@ -853,6 +853,15 @@ async function mergeConfig(url, options, tauriConf) {
     const currentPlatform = platformMap[platform];
     if (userAgent.length > 0) {
         tauriConf.pake.user_agent[currentPlatform] = userAgent;
+    }
+    // Append "App/<token>" to the User-Agent so servers can identify the app.
+    // Applied after any --user-agent override so both options work together.
+    const trimmedAppToken = appToken?.trim() ?? '';
+    if (trimmedAppToken.length > 0) {
+        const currentUA = tauriConf.pake.user_agent[currentPlatform];
+        tauriConf.pake.user_agent[currentPlatform] =
+            `${currentUA} App/${trimmedAppToken}`;
+        logger.info(`✼ App token appended to User-Agent: App/${trimmedAppToken}`);
     }
     tauriConf.pake.system_tray[currentPlatform] = showSystemTray;
     if (platform === 'linux') {
@@ -2776,6 +2785,7 @@ const DEFAULT_PAKE_OPTIONS = {
     install: false,
     camera: false,
     microphone: false,
+    appToken: '',
 };
 
 function validateNumberInput(value) {
@@ -2847,6 +2857,9 @@ ${green('|_|   \\__,_|_|\\_\\___|  can turn any webpage into a desktop app with 
         .hideHelp())
         .addOption(new Option('--user-agent <string>', 'Custom user agent')
         .default(DEFAULT_PAKE_OPTIONS.userAgent)
+        .hideHelp())
+        .addOption(new Option('--app-token <string>', 'Token appended to User-Agent as "App/<token>" for server-side identification')
+        .default(DEFAULT_PAKE_OPTIONS.appToken)
         .hideHelp())
         .addOption(new Option('--targets <string>', 'Build target format for your system').default(DEFAULT_PAKE_OPTIONS.targets))
         .addOption(new Option('--app-version <string>', 'App version, the same as package.json version')

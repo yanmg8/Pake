@@ -356,6 +356,19 @@ Customize the browser user agent. Default is empty.
 --user-agent <string>
 ```
 
+#### [app-token]
+
+Append `App/<token>` to the end of the User-Agent so the server can identify and authorize the packaged app. Works together with `--user-agent` (the token is appended after any custom user agent). Default is empty.
+
+```shell
+--app-token <string>
+```
+
+```shell
+pake https://example.com --name MyApp --app-token abc123
+# User-Agent: "<default UA> App/abc123"
+```
+
 #### [show-system-tray]
 
 Display the application in system tray. Default is `false`.

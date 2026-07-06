@@ -354,6 +354,19 @@ pake https://github.com --name GitHub --no-bundle
 --user-agent <string>
 ```
 
+#### [app-token]
+
+在 User-Agent 末尾追加 `App/<token>`，供服务端识别和授权打包应用。可与 `--user-agent` 同时使用（token 会追加在自定义 UA 之后），默认为空。
+
+```shell
+--app-token <string>
+```
+
+```shell
+pake https://example.com --name MyApp --app-token abc123
+# User-Agent: "<默认 UA> App/abc123"
+```
+
 #### [show-system-tray]
 
 设置应用程序显示在系统托盘，默认为 `false`。

@@ -460,6 +460,7 @@ export async function mergeConfig(
   const {
     appVersion,
     userAgent,
+    appToken,
     showSystemTray,
     useLocalFile,
     identifier,
@@ -511,6 +512,17 @@ export async function mergeConfig(
   if (userAgent.length > 0) {
     tauriConf.pake.user_agent[currentPlatform] = userAgent;
   }
+
+  // Append "App/<token>" to the User-Agent so servers can identify the app.
+  // Applied after any --user-agent override so both options work together.
+  const trimmedAppToken = appToken?.trim() ?? '';
+  if (trimmedAppToken.length > 0) {
+    const currentUA = tauriConf.pake.user_agent[currentPlatform];
+    tauriConf.pake.user_agent[currentPlatform] =
+      `${currentUA} App/${trimmedAppToken}`;
+    logger.info(`✼ App token appended to User-Agent: App/${trimmedAppToken}`);
+  }
+
   tauriConf.pake.system_tray[currentPlatform] = showSystemTray;
 
   if (platform === 'linux') {

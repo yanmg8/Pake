@@ -4,6 +4,7 @@
 !dist/cli.js
 .DS_Store
 .idea
+pake2/
 .next
 .vscode
 *.app

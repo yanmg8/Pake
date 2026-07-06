@@ -80,6 +80,14 @@ ${green('|_|   \\__,_|_|\\_\\___|  can turn any webpage into a desktop app with 
     )
     .addOption(
       new Option(
+        '--app-token <string>',
+        'Token appended to User-Agent as "App/<token>" for server-side identification',
+      )
+        .default(DEFAULT.appToken)
+        .hideHelp(),
+    )
+    .addOption(
+      new Option(
         '--targets <string>',
         'Build target format for your system',
       ).default(DEFAULT.targets),

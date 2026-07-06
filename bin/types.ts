@@ -50,6 +50,9 @@ export interface PakeCliOptions {
   // Custom User-Agent, default off
   userAgent: string;
 
+  // Token appended to the User-Agent as "App/<token>" for server-side identification, default empty
+  appToken: string;
+
   // Enable system tray, default off for macOS, on for Windows and Linux
   showSystemTray: boolean;
 
