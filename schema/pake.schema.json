@@ -96,6 +96,11 @@
       "description": "Custom user agent.",
       "default": ""
     },
+    "appToken": {
+      "type": "string",
+      "description": "Token appended to the User-Agent as App/<token> for server-side identification.",
+      "default": ""
+    },
     "targets": {
       "type": "string",
       "description": "Build target format. Linux: deb/appimage/rpm/zst and *-arm64 variants (comma-separated allowed); Windows: x64/arm64; macOS: intel/apple/universal/app/dmg. Defaults to the platform installer format."
