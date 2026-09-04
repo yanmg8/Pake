@@ -6,7 +6,7 @@
 
 ## 安装
 
-请确保您的 Node.js 版本为 22 或更高版本（例如 22.11.0）。_注意：较旧的版本 ≥18.0.0 也可能可以工作。_
+请确保您的 Node.js 版本为 22 或更高版本（例如 22.11.0）。_注意：较旧的版本 ≥20.0.0 也可能可以工作。_
 
 **推荐方式 (pnpm)：**
 
@@ -34,7 +34,7 @@ source ~/.bashrc
 
 **前置条件：**
 
-- Node.js ≥18.0.0
+- Node.js ≥20.0.0
 - Rust ≥1.85.0（如缺失将自动安装）
 - **macOS/Linux**：`curl`、`wget`、`file` 和 `tar`（用于依赖管理）
 
@@ -66,22 +66,33 @@ pake [url] [options]
 
 ### [url]
 
-`url` 是您需要打包的网页链接 🔗 或本地 HTML 文件的路径，此参数为必填。
+`url` 是您需要打包的网页链接 🔗、本地 HTML 文件的路径，或包含根级 `index.html` 的静态文件目录（例如构建产物 `dist/`）。除非通过 `--config` 文件提供 `url`，此参数为必填。
+
+```shell
+pake https://example.com --name Example
+pake ./page.html --name MyPage
+pake ./dist --name MyTool
+```
+
+本地打包开箱支持 hash 路由；history 模式的 SPA 路由暂不支持。
 
 ### [options]
 
 您可以通过传递以下选项来定制打包过程。`pake --help` 展示全部支持的 CLI 选项。本文档是完整参考。
 
-| 选项               | 描述                                 | 示例                                           |
-| ------------------ | ------------------------------------ | ---------------------------------------------- |
-| `--name`           | 应用程序名称                         | `--name "Weekly"`                              |
-| `--icon`           | 自定义图标（可选，自动获取网站图标） | `--icon https://cdn.tw93.fun/pake/weekly.icns` |
-| `--width`          | 窗口宽度（默认：1200px）             | `--width 1400`                                 |
-| `--height`         | 窗口高度（默认：780px）              | `--height 900`                                 |
-| `--hide-title-bar` | 沉浸式标题栏（仅macOS）              | `--hide-title-bar`                             |
-| `--debug`          | 启用开发者工具                       | `--debug`                                      |
-| `--help`           | 显示全部 CLI 选项                    | `--help`                                       |
-| `--version`        | 显示 CLI 版本                        | `--version`                                    |
+| 选项                        | 描述                                 | 示例                                           |
+| --------------------------- | ------------------------------------ | ---------------------------------------------- |
+| `--name`                    | 应用程序名称                         | `--name "Weekly"`                              |
+| `--icon`                    | 自定义图标（可选，自动获取网站图标） | `--icon https://cdn.tw93.fun/pake/weekly.icns` |
+| `--width`                   | 窗口宽度（默认：1200px）             | `--width 1400`                                 |
+| `--height`                  | 窗口高度（默认：780px）              | `--height 900`                                 |
+| `--hide-title-bar`          | 沉浸式标题栏（仅 macOS）             | `--hide-title-bar`                             |
+| `--hide-window-decorations` | 隐藏原生窗口装饰（仅 Windows/Linux） | `--hide-window-decorations`                    |
+| `--debug`                   | 启用开发者工具                       | `--debug`                                      |
+| `--config`                  | 从 JSON 配置文件读取选项             | `--config app.json`                            |
+| `--json`                    | stdout 输出机器可读结果（自动化用）  | `--json`                                       |
+| `--help`                    | 显示全部 CLI 选项                    | `--help`                                       |
+| `--version`                 | 显示 CLI 版本                        | `--version`                                    |
 
 完整选项请参见下面的详细说明：
 
@@ -172,6 +183,14 @@ pake https://github.com --name GitHub
 
 ```shell
 --hide-title-bar
+```
+
+#### [hide-window-decorations]
+
+在 Windows 和 Linux 上隐藏原生窗口装饰，默认为 `false`。该选项会移除标题栏和窗口控制按钮，并在顶部提供拖拽区域以移动窗口。可使用 `F11` 切换原生全屏。在 macOS 上会被忽略。
+
+```shell
+--hide-window-decorations
 ```
 
 #### [fullscreen]
@@ -531,6 +550,8 @@ pake https://chat.example.com --name ChatApp --multi-instance
 
 启用后，如果应用已在运行，再次启动会新开一个窗口，而不是仅聚焦已有窗口。
 
+在 macOS 上，通过 Cmd+N 打开的附加窗口会自动加入应用的原生标签页组；网页认证和 `window.open` 弹窗仍保持独立。
+
 这个选项可以改善基于弹窗的认证流程，但不能绕过认证提供方的策略限制。某些提供方，尤其是 Google，仍然可能拒绝在嵌入式 WebView 中完成登录。
 
 ```shell
@@ -551,6 +572,8 @@ pake https://chat.example.com --name ChatApp --multi-window
 #### [use-local-file]
 
 当 `url` 为本地文件路径时，如果启用此选项，则会递归地将 `url` 路径文件所在的文件夹及其所有子文件复制到 Pake 的静态文件夹。默认不启用。
+
+目录输入（`pake ./dist`）始终打包整个目录树，此选项只影响单个 HTML 文件输入。
 
 ```shell
 --use-local-file
@@ -585,6 +608,14 @@ pake ./my-app/index.html --name "my-app" --use-local-file
 --proxy-url socks5://127.0.0.1:7891
 ```
 
+#### [basic-auth]
+
+当目标站点请求 HTTP Basic 认证时显示登录提示。此选项仅用于 macOS，因为 WKWebView 不会自行显示 401 登录框。凭据在打包后的应用中运行时输入，并且只在当前会话中保留。
+
+```shell
+--basic-auth
+```
+
 #### [debug]
 
 启用开发者工具和详细日志输出，用于调试。
@@ -592,6 +623,44 @@ pake ./my-app/index.html --name "my-app" --use-local-file
 ```shell
 --debug
 ```
+
+#### [config]
+
+用声明式 JSON 配置文件代替拼接命令行参数。字段名是 camelCase 的 CLI 选项名，外加 `url`；schema 见 [schema/pake.schema.json](../schema/pake.schema.json)。显式 CLI 参数始终优先于配置文件字段。未知字段、类型错误与超出范围的数值会立即报错。相对路径形式的 `url` 相对当前工作目录解析，而非配置文件所在目录。调用参数（`--json`、`--config`、`--version`）不允许写进配置文件。
+
+```shell
+--config <path>
+
+# app.json
+# {
+#   "$schema": "https://raw.githubusercontent.com/tw93/Pake/main/schema/pake.schema.json",
+#   "url": "https://example.com",
+#   "name": "MyApp",
+#   "width": 1280,
+#   "hideTitleBar": true
+# }
+pake --config app.json
+```
+
+#### [json]
+
+面向脚本与 AI agent 的机器可读模式。所有日志改走 stderr，stdout 只输出一个 JSON 结果对象；交互式提示全部禁用（stdin 非 TTY 时同样禁用）。
+
+```shell
+--json
+
+# 成功（stdout）：
+# {"ok":true,"name":"MyApp","platform":"darwin","arch":"arm64",
+#  "outputs":[{"path":"/abs/MyApp.dmg","sizeBytes":5242880,"format":"dmg"}],
+#  "warnings":[],"error":null}
+#
+# 失败（stdout）：
+# {"ok":false, ..., "error":{"code":"ENV_MISSING","message":"...","hint":"..."}}
+```
+
+退出码：`0` 成功、`2` 输入非法、`3` 构建失败、`4` 环境缺失或依赖安装失败（如未安装 Rust、依赖安装出错）、`1` 未预期错误。错误码：`INVALID_INPUT`、`ENV_MISSING`、`BUILD_FAILED`、`UNEXPECTED`，另有 `NETWORK`（预留，当前版本的网络失败会按所处阶段归入 `ENV_MISSING` 或 `BUILD_FAILED`）。
+
+Linux 多 target 构建（如 `--targets deb,appimage`）时，`ok` 为 true 不代表全部格式成功：单个 target 失败而其余成功会记入 `warnings`。请用 `outputs[].format` 核对拿到的格式是否齐全。
 
 #### [ignore-certificate-errors]
 

@@ -9,6 +9,7 @@ export const DEFAULT_PAKE_OPTIONS: PakeCliOptions = {
   maximize: false,
   resizable: true,
   hideTitleBar: false,
+  hideWindowDecorations: false,
   alwaysOnTop: false,
   appVersion: '1.0.0',
   darkMode: false,
@@ -32,7 +33,9 @@ export const DEFAULT_PAKE_OPTIONS: PakeCliOptions = {
   useLocalFile: false,
   systemTrayIcon: '',
   proxyUrl: '',
+  basicAuth: false,
   debug: false,
+  json: false,
   inject: [],
   installerLanguage: 'en-US',
   hideOnClose: undefined, // Platform-specific: true for macOS, false for others

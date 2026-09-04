@@ -29,8 +29,11 @@ export interface PakeCliOptions {
   // Start window maximized, default false
   maximize: boolean;
 
-  // Enable immersive header, default false.
+  // Enable immersive header, default false. macOS only.
   hideTitleBar: boolean;
+
+  // Hide native window decorations, default false. Windows and Linux only.
+  hideWindowDecorations: boolean;
 
   // Enable windows always on top, default false
   alwaysOnTop: boolean;
@@ -72,11 +75,20 @@ export interface PakeCliOptions {
   // Debug mode, outputs more logs
   debug: boolean;
 
+  // Machine-readable mode: logs go to stderr, stdout carries one JSON result, default false
+  json: boolean;
+
+  // Path to a JSON config file whose fields mirror CLI options plus url
+  config?: string;
+
   /** External scripts that need to be injected into the page. */
   inject: string[];
 
   // Set Api Proxy
   proxyUrl: string;
+
+  // Prompt for HTTP Basic credentials at runtime on macOS, default false.
+  basicAuth: boolean;
 
   // Installer language, valid for Windows users, default is en-US
   installerLanguage: string;
@@ -162,6 +174,7 @@ export interface PlatformSpecific<T> {
 export interface WindowConfig {
   url: string;
   hide_title_bar: boolean;
+  hide_window_decorations: boolean;
   fullscreen: boolean;
   maximize: boolean;
   width: number;
@@ -194,6 +207,7 @@ export interface PakeConfig {
   system_tray: PlatformSpecific<boolean>;
   system_tray_path: string;
   proxy_url: string;
+  basic_auth: boolean;
   multi_instance: boolean;
   multi_window: boolean;
   inject?: string[];

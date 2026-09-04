@@ -14,16 +14,15 @@ import fs from 'fs';
 import fs$1 from 'fs/promises';
 import { dir } from 'tmp-promise';
 import { fileTypeFromBuffer } from 'file-type';
-import icongen from 'icon-gen';
-import sharp from 'sharp';
 import * as psl from 'psl';
 import { InvalidArgumentError, program as program$1, Option } from 'commander';
 
 var name = "pake-cli";
-var version = "3.13.1";
+var version = "3.15.7";
 var description = "🤱🏻 Turn any webpage into a desktop app with one command. 🤱🏻 一键打包网页生成轻量桌面应用。";
+var homepage = "https://faberon.io/projects/pake";
 var engines = {
-	node: ">=18.0.0"
+	node: ">=20.9.0"
 };
 var packageManager = "pnpm@10.26.2";
 var bin = {
@@ -47,7 +46,8 @@ var keywords = [
 ];
 var files = [
 	"LICENSE-EXCEPTION",
-	"dist",
+	"llms.txt",
+	"dist/cli.js",
 	"src-tauri"
 ];
 var scripts = {
@@ -77,14 +77,13 @@ var dependencies = {
 	chalk: "^5.6.2",
 	commander: "^14.0.3",
 	execa: "^9.6.1",
-	"file-type": "^21.3.0",
+	"file-type": "^21.3.4",
 	"fs-extra": "^11.3.3",
-	"icon-gen": "^5.0.0",
 	loglevel: "^1.9.2",
 	ora: "^9.3.0",
 	prompts: "^2.4.2",
 	psl: "^1.15.0",
-	sharp: "^0.34.5",
+	sharp: "^0.35.0",
 	"tmp-promise": "^3.0.3",
 	"update-notifier": "^7.3.1"
 };
@@ -110,8 +109,9 @@ var devDependencies = {
 };
 var pnpm = {
 	overrides: {
-		sharp: "^0.34.5",
-		"@img/sharp-libvips-darwin-arm64": "1.2.4"
+		sharp: "^0.35.0",
+		"@img/sharp-libvips-darwin-arm64": "1.3.0",
+		tmp: "0.2.7"
 	},
 	onlyBuiltDependencies: [
 		"esbuild",
@@ -122,6 +122,7 @@ var packageJson = {
 	name: name,
 	version: version,
 	description: description,
+	homepage: homepage,
 	engines: engines,
 	packageManager: packageManager,
 	bin: bin,
@@ -172,6 +173,58 @@ let tauriConfig = {
     pake: pakeConf,
 };
 
+// Stable exit-code contract: 0 success, 2 invalid input, 3 build/network
+// failure, 4 missing environment, 1 unexpected. Documented in cli-usage docs.
+const ERROR_EXIT_CODES = {
+    INVALID_INPUT: 2,
+    BUILD_FAILED: 3,
+    NETWORK: 3,
+    ENV_MISSING: 4,
+    UNEXPECTED: 1,
+};
+let machineMode = false;
+const capturedWarnings = [];
+/**
+ * Route all loglevel output to stderr, capture warnings for the final JSON
+ * result, and strip ANSI colors. Must be called before any logging happens.
+ */
+function enableMachineMode() {
+    if (machineMode)
+        return;
+    machineMode = true;
+    chalk.level = 0;
+    log.methodFactory = (methodName) => {
+        return (...args) => {
+            if (methodName === 'warn') {
+                capturedWarnings.push(args.map(String).join(' '));
+            }
+            console.error(...args);
+        };
+    };
+    // Rebuild logging methods with the new factory.
+    log.setLevel(log.getLevel());
+}
+function isMachineMode() {
+    return machineMode;
+}
+function getCapturedWarnings() {
+    return [...capturedWarnings];
+}
+/**
+ * Whether Pake may prompt the user. False in machine mode, without a TTY,
+ * or inside CI, where prompts would hang or produce garbage.
+ */
+function isInteractive() {
+    return (!machineMode &&
+        Boolean(process.stdin.isTTY) &&
+        Boolean(process.stdout.isTTY) &&
+        !process.env.CI &&
+        !process.env.GITHUB_ACTIONS);
+}
+function printJsonResult(result) {
+    process.stdout.write(`${JSON.stringify(result)}\n`);
+}
+
 // Generates a stable identifier based on the app URL (and optionally name).
 // When name is provided it is included in the hash so two apps wrapping
 // the same URL can coexist. Omitting name preserves backward compatibility
@@ -217,6 +270,8 @@ function getSpinner(text) {
         text: `${chalk.cyan(text)}\n`,
         spinner: loadingType,
         color: 'cyan',
+        // In machine mode stdout must stay parseable and stderr low-noise.
+        isSilent: isMachineMode(),
     }).start();
 }
 
@@ -324,7 +379,11 @@ async function shellExec(command, timeout = 300000, env) {
             cwd: npmDirectory,
             // Use 'inherit' to show all output directly to user in real-time.
             // This ensures linuxdeploy and other tool outputs are visible during builds.
-            stdio: 'inherit',
+            // In machine mode (--json) stdout is reserved for the final JSON result,
+            // so subprocess stdout is rerouted to stderr instead.
+            stdin: 'inherit',
+            stdout: isMachineMode() ? process.stderr : 'inherit',
+            stderr: 'inherit',
             shell: true,
             timeout,
             env: env ? { ...process.env, ...env } : process.env,
@@ -502,6 +561,31 @@ function generateIdentifierSafeName(name) {
     return cleaned;
 }
 
+/**
+ * Error class used for user-facing CLI errors.
+ *
+ * The top-level catch in `bin/cli.ts` prints `message` directly without a
+ * stack trace and exits with the code mapped from `code` (see
+ * ERROR_EXIT_CODES in utils/output.ts). Use this for predictable failures
+ * (invalid names, missing files, etc.) so users see a clean message instead
+ * of a Node.js stack dump. `code` and `hint` also feed the `--json` result.
+ */
+class PakeError extends Error {
+    constructor(message, options) {
+        super(message);
+        this.isUserError = true;
+        this.name = 'PakeError';
+        this.code = options?.code;
+        this.hint = options?.hint;
+    }
+}
+function isPakeError(error) {
+    return (error instanceof PakeError ||
+        (typeof error === 'object' &&
+            error !== null &&
+            error.isUserError === true));
+}
+
 const LINUX_TARGET_TYPES = ['deb', 'appimage', 'rpm', 'zst'];
 // Returns the valid Linux build targets from a comma-separated targets
 // string, preserving LINUX_TARGET_TYPES order. Unknown entries are dropped.
@@ -535,6 +619,7 @@ function resolveLinuxBundleTargets(targets) {
 function buildWindowConfigOverrides(options, platform = asSupportedPlatform(process.platform)) {
     const platformHideOnClose = options.hideOnClose ?? platform === 'darwin';
     const platformHideTitleBar = platform === 'darwin' ? options.hideTitleBar : false;
+    const platformHideWindowDecorations = platform !== 'darwin' ? options.hideWindowDecorations : false;
     return {
         width: options.width,
         height: options.height,
@@ -542,6 +627,7 @@ function buildWindowConfigOverrides(options, platform = asSupportedPlatform(proc
         maximize: options.maximize,
         resizable: options.resizable ?? true,
         hide_title_bar: platformHideTitleBar,
+        hide_window_decorations: platformHideWindowDecorations,
         activation_shortcut: options.activationShortcut,
         always_on_top: options.alwaysOnTop,
         dark_mode: options.darkMode,
@@ -587,30 +673,108 @@ async function copyTemplateConfigs() {
         }
     }));
 }
-async function handleLocalFile(url, useLocalFile, tauriConf) {
-    const pathExists = await fsExtra.pathExists(url);
-    if (pathExists) {
-        logger.warn('✼ Your input might be a local file.');
-        const fileName = path.basename(url);
-        const dirName = path.dirname(url);
-        const distDir = path.join(npmDirectory, 'dist');
-        const distBakDir = path.join(npmDirectory, 'dist_bak');
-        if (!useLocalFile) {
-            const urlPath = path.join(distDir, fileName);
-            await fsExtra.copy(url, urlPath);
+// Replace the CLI's own dist/ with the user's static files while keeping the
+// build artifacts (cli.js) the packaged app does not need but the CLI does.
+// dist_bak always holds the ORIGINAL package dist: once it exists, later
+// stagings must not overwrite it with a previous user tree, or the original
+// files would be unrecoverable across repeated local builds.
+async function stageLocalTree(sourceDir) {
+    const distDir = path.join(npmDirectory, 'dist');
+    const distBakDir = path.join(npmDirectory, 'dist_bak');
+    // Resolve symlinked input up front: staging must produce a real copy, or
+    // the cli.js copy-back below would write through the link into the user's
+    // own directory.
+    const resolvedSource = await fsExtra.realpath(sourceDir);
+    const resolvedPackage = await fsExtra
+        .realpath(npmDirectory)
+        .catch(() => path.resolve(npmDirectory));
+    const packageDist = path.join(resolvedPackage, 'dist');
+    if (resolvedSource === resolvedPackage ||
+        resolvedPackage.startsWith(resolvedSource + path.sep) ||
+        resolvedSource === packageDist ||
+        resolvedSource.startsWith(packageDist + path.sep)) {
+        throw new PakeError(`Local input "${sourceDir}" contains the Pake CLI installation itself.`, {
+            code: 'INVALID_INPUT',
+            hint: 'Point Pake at your built output directory, not at a directory containing pake-cli.',
+        });
+    }
+    try {
+        if (await fsExtra.pathExists(distBakDir)) {
+            fsExtra.removeSync(distDir);
         }
         else {
-            fsExtra.moveSync(distDir, distBakDir, { overwrite: true });
-            fsExtra.copySync(dirName, distDir, { overwrite: true });
-            const filesToCopyBack = ['cli.js'];
-            await Promise.all(filesToCopyBack.map((file) => fsExtra.copy(path.join(distBakDir, file), path.join(distDir, file))));
+            fsExtra.moveSync(distDir, distBakDir);
         }
-        tauriConf.pake.windows[0].url = fileName;
+        fsExtra.copySync(resolvedSource, distDir, {
+            overwrite: true,
+            dereference: true,
+        });
+        const filesToCopyBack = ['cli.js'];
+        await Promise.all(filesToCopyBack.map((file) => fsExtra.copy(path.join(distBakDir, file), path.join(distDir, file))));
+    }
+    catch (error) {
+        // Never leave the package without its own dist/: cli.js lives there and
+        // every later `pake` invocation would fail until a manual reinstall.
+        restoreLocalTree();
+        throw error;
+    }
+}
+// Put the package's original dist/ back once a local-input run is over (or
+// failed). Tauri bakes `frontendDist: ../dist` into every binary, so a stale
+// staged tree would leak this user's files into the next app built from the
+// same install. Safe to call on any run: a present dist_bak always holds the
+// original package dist, including one stranded by an older crashed run.
+function restoreLocalTree() {
+    const distDir = path.join(npmDirectory, 'dist');
+    const distBakDir = path.join(npmDirectory, 'dist_bak');
+    if (!fsExtra.pathExistsSync(distBakDir)) {
+        return;
+    }
+    try {
+        fsExtra.removeSync(distDir);
+        fsExtra.moveSync(distBakDir, distDir);
+    }
+    catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        logger.warn(`Failed to restore the CLI's original dist/ from dist_bak: ${detail}`);
+    }
+}
+// Exported for unit tests (web fallback and directory entry guard).
+async function handleLocalFile(url, useLocalFile, tauriConf) {
+    const pathExists = await fsExtra.pathExists(url);
+    if (!pathExists) {
+        tauriConf.pake.windows[0].url_type = 'web';
+        return;
+    }
+    const stat = await fsExtra.stat(url);
+    if (stat.isDirectory()) {
+        // A directory of static web assets (e.g. a generated dist/): the whole
+        // tree is packaged and the app entry is its root index.html.
+        const entryFile = 'index.html';
+        if (!(await fsExtra.pathExists(path.join(url, entryFile)))) {
+            throw new PakeError(`Local directory "${url}" has no ${entryFile} at its root.`, {
+                code: 'INVALID_INPUT',
+                hint: 'Point Pake at the built output directory that contains index.html.',
+            });
+        }
+        logger.info(`✺ Packaging local directory: ${url}`);
+        await stageLocalTree(url);
+        tauriConf.pake.windows[0].url = entryFile;
         tauriConf.pake.windows[0].url_type = 'local';
+        return;
+    }
+    logger.info(`✺ Packaging local file: ${url}`);
+    const fileName = path.basename(url);
+    const distDir = path.join(npmDirectory, 'dist');
+    if (!useLocalFile) {
+        const urlPath = path.join(distDir, fileName);
+        await fsExtra.copy(url, urlPath);
     }
     else {
-        tauriConf.pake.windows[0].url_type = 'web';
+        await stageLocalTree(path.dirname(url));
     }
+    tauriConf.pake.windows[0].url = fileName;
+    tauriConf.pake.windows[0].url_type = 'local';
 }
 function buildLinuxDesktopContent(name, title, linuxBinaryName) {
     const chineseName = title && /[\u4e00-\u9fa5]/.test(title) ? title : null;
@@ -757,7 +921,7 @@ async function mergeIcons(options, name, tauriConf, platform, safeAppName) {
     delete tauriConf.app.trayIcon;
 }
 async function injectCustomCode(options, tauriConf) {
-    const { inject, proxyUrl, multiInstance, multiWindow, wasm } = options;
+    const { inject, proxyUrl, basicAuth, multiInstance, multiWindow, wasm } = options;
     const injectFilePath = path.join(npmDirectory, 'src-tauri/src/inject/custom.js');
     if (inject?.length > 0) {
         const injectArray = Array.isArray(inject) ? inject : [inject];
@@ -774,6 +938,7 @@ async function injectCustomCode(options, tauriConf) {
         await fsExtra.writeFile(injectFilePath, '');
     }
     tauriConf.pake.proxy_url = proxyUrl || '';
+    tauriConf.pake.basic_auth = basicAuth;
     tauriConf.pake.multi_instance = multiInstance;
     tauriConf.pake.multi_window = multiWindow;
     if (wasm) {
@@ -826,6 +991,9 @@ async function mergeConfig(url, options, tauriConf) {
     const platform = asSupportedPlatform(process.platform);
     if (options.hideTitleBar && platform !== 'darwin') {
         logger.warn('✼ --hide-title-bar is only supported on macOS and will be ignored on this platform.');
+    }
+    if (options.hideWindowDecorations && platform === 'darwin') {
+        logger.warn('✼ --hide-window-decorations is only supported on Windows and Linux and will be ignored on this platform.');
     }
     const tauriConfWindowOptions = buildWindowConfigOverrides(options, platform);
     Object.assign(tauriConf.pake.windows[0], { url, ...tauriConfWindowOptions });
@@ -1052,7 +1220,60 @@ const APPIMAGE_FAILURE_GUIDANCE = `\n\n${APPIMAGE_BAR}\n` +
     APPIMAGE_BAR;
 class BaseBuilder {
     constructor(options) {
+        this.artifacts = [];
         this.options = options;
+    }
+    /** Final artifacts produced by this build, for the `--json` result. */
+    getArtifacts() {
+        return [...this.artifacts];
+    }
+    /** Architecture reported in the `--json` result. */
+    getReportArch() {
+        return this.options.multiArch ? 'universal' : process.arch;
+    }
+    // Drop a recorded artifact whose file was later removed (e.g. the
+    // temporary .deb consumed by zst repacking), so --json never lists a
+    // path that no longer exists.
+    removeArtifact(artifactPath) {
+        const resolved = path.resolve(artifactPath);
+        this.artifacts = this.artifacts.filter((artifact) => artifact.path !== resolved);
+    }
+    async recordArtifact(artifactPath, format) {
+        try {
+            const stat = await fsExtra.stat(artifactPath);
+            let sizeBytes = stat.size;
+            if (stat.isDirectory()) {
+                sizeBytes = await BaseBuilder.getPathSize(artifactPath);
+            }
+            this.artifacts.push({
+                path: path.resolve(artifactPath),
+                sizeBytes,
+                format,
+            });
+        }
+        catch {
+            // Never fail a finished build over size bookkeeping.
+            this.artifacts.push({
+                path: path.resolve(artifactPath),
+                sizeBytes: 0,
+                format,
+            });
+        }
+    }
+    static async getPathSize(directory) {
+        let size = 0;
+        for (const entry of await fsExtra.readdir(directory, {
+            withFileTypes: true,
+        })) {
+            const entryPath = path.join(directory, entry.name);
+            if (entry.isDirectory()) {
+                size += await BaseBuilder.getPathSize(entryPath);
+            }
+            else if (entry.isFile()) {
+                size += (await fsExtra.stat(entryPath)).size;
+            }
+        }
+        return size;
     }
     async prepare() {
         const tauriSrcPath = path.join(npmDirectory, 'src-tauri');
@@ -1064,6 +1285,12 @@ class BaseBuilder {
         }
         ensureRustEnv();
         if (!checkRustInstalled()) {
+            if (!isInteractive()) {
+                throw new PakeError('Rust required to package your webapp.', {
+                    code: 'ENV_MISSING',
+                    hint: 'Install Rust via https://rustup.rs, then rerun the same command.',
+                });
+            }
             const res = await prompts({
                 type: 'confirm',
                 message: 'Rust not detected. Install now?',
@@ -1073,8 +1300,10 @@ class BaseBuilder {
                 await installRust();
             }
             else {
-                logger.error('✕ Rust required to package your webapp.');
-                process.exit(1);
+                throw new PakeError('Rust required to package your webapp.', {
+                    code: 'ENV_MISSING',
+                    hint: 'Install Rust via https://rustup.rs, then rerun the same command.',
+                });
             }
         }
         const spinner = getSpinner('Installing package...');
@@ -1133,8 +1362,9 @@ class BaseBuilder {
         // Let spinner run for a moment so user can see it, then stop before package manager command
         await new Promise((resolve) => setTimeout(resolve, 500));
         buildSpinner.stop();
-        // Show static message to keep the status visible
-        logger.warn('✸ Building app...');
+        // Show static message to keep the status visible. Info, not warn: warn
+        // entries feed the --json warnings array and this is a status line.
+        logger.info('✸ Building app...');
         const baseEnv = getBuildEnvironment();
         let buildEnv = {
             ...(baseEnv ?? {}),
@@ -1178,6 +1408,7 @@ class BaseBuilder {
         // executable the build produced instead.
         if (this.options.bundle === false) {
             await this.copyRawBinary(npmDirectory, name);
+            await this.recordArtifact(this.getRawBinaryPath(name), 'binary');
             if (logSuccess) {
                 logger.success('✔ Build success!');
                 logger.success('✔ Raw binary located in', path.resolve(this.getRawBinaryPath(name)));
@@ -1190,9 +1421,11 @@ class BaseBuilder {
         const appPath = this.getBuildAppPath(npmDirectory, fileName, fileType);
         const distPath = path.resolve(`${name}.${fileType}`);
         await fsExtra.copy(appPath, distPath);
+        await this.recordArtifact(distPath, fileType);
         // Copy raw binary if requested
         if (this.options.keepBinary) {
             await this.copyRawBinary(npmDirectory, name);
+            await this.recordArtifact(this.getRawBinaryPath(name), 'binary');
         }
         await fsExtra.remove(appPath);
         if (logSuccess) {
@@ -1219,6 +1452,13 @@ class BaseBuilder {
             // fsExtra.move uses fs.rename (atomic on same filesystem) and falls back
             // to copy+remove only when moving across volumes.
             await fsExtra.move(appBundlePath, appDest, { overwrite: true });
+            // Keep the JSON result pointing at where the artifact actually lives.
+            const movedFrom = path.resolve(appBundlePath);
+            for (const artifact of this.artifacts) {
+                if (artifact.path === movedFrom) {
+                    artifact.path = appDest;
+                }
+            }
             logger.success(`✔ ${appBundleName.replace(/\.app$/, '')} installed to /Applications`);
         }
         catch (error) {
@@ -1434,6 +1674,9 @@ class MacBuilder extends BaseBuilder {
         }
         return `${name}_${tauriConfig.version}_${arch}`;
     }
+    getReportArch() {
+        return this.getActualArch();
+    }
     getActualArch() {
         if (this.buildArch === 'universal' || this.options.multiArch) {
             return 'universal';
@@ -1486,6 +1729,9 @@ class WinBuilder extends BaseBuilder {
             ? this.resolveTargetArch(options.targets)
             : this.resolveTargetArch('auto');
         this.options.targets = this.buildFormat;
+    }
+    getReportArch() {
+        return this.buildArch;
     }
     getFileName() {
         const { name } = this.options;
@@ -1541,6 +1787,9 @@ class LinuxBuilder extends BaseBuilder {
             this.buildArch = this.resolveTargetArch('auto');
         }
         this.options.targets = this.buildFormat;
+    }
+    getReportArch() {
+        return this.buildArch;
     }
     getFileName() {
         const { name = 'pake-app', targets } = this.options;
@@ -1690,12 +1939,14 @@ post_remove() {
 }
 `);
             await shellExec(`bsdtar --zstd -cf "${packagePath}" -C "${dataDir}" .PKGINFO .INSTALL usr`);
+            await this.recordArtifact(packagePath, 'zst');
             logger.success('✔ Build success!');
             logger.success('✔ App installer located in', packagePath);
         }
         finally {
             if (removeSourceDeb) {
                 await fsExtra.remove(debPath);
+                this.removeArtifact(debPath);
             }
             await fsExtra.remove(workDir);
         }
@@ -1872,6 +2123,9 @@ function getIconSourcePriority(url, appName) {
         : ['domain', 'dashboard'];
 }
 
+async function loadSharp$1() {
+    return (await import('sharp')).default;
+}
 const ICO_HEADER_SIZE = 6;
 const ICO_DIR_ENTRY_SIZE = 16;
 const ICO_TYPE_ICON = 1;
@@ -2005,6 +2259,7 @@ async function pickLargestFrameAsPng(buffer, entries) {
     // Fallback: let sharp render directly from the ICO buffer. sharp picks the
     // largest embedded frame on its own.
     try {
+        const sharp = await loadSharp$1();
         return await sharp(buffer).png().toBuffer();
     }
     catch {
@@ -2026,6 +2281,7 @@ async function ensureMultiResolutionIco(sourcePath, outputPath, preferredSize = 
         if (!sourcePng) {
             return await writeIcoWithPreferredSize(sourcePath, outputPath, preferredSize);
         }
+        const sharp = await loadSharp$1();
         const frames = await Promise.all(desiredSizes.map(async (size) => {
             // Reuse an existing exact-size PNG frame when possible to keep any
             // hand-tuned small icon (e.g. a 16x16 with deliberate pixel hinting).
@@ -2092,6 +2348,9 @@ function buildIcoFromPngBuffers(frames) {
     return output;
 }
 
+async function loadSharp() {
+    return (await import('sharp')).default;
+}
 const ICON_CONFIG = {
     minFileSize: 100,
     supportedFormats: [
@@ -2112,8 +2371,20 @@ const ICON_CONFIG = {
 const PLATFORM_CONFIG = {
     win: { format: '.ico', sizes: [...WIN_STANDARD_ICO_SIZES] },
     linux: { format: '.png', size: 512 },
-    macos: { format: '.icns', sizes: [16, 32, 64, 128, 256, 512, 1024] },
+    macos: { format: '.icns' },
 };
+const MACOS_ICONSET_FILES = [
+    ['icon_16x16.png', 16],
+    ['icon_16x16@2x.png', 32],
+    ['icon_32x32.png', 32],
+    ['icon_32x32@2x.png', 64],
+    ['icon_128x128.png', 128],
+    ['icon_128x128@2x.png', 256],
+    ['icon_256x256.png', 256],
+    ['icon_256x256@2x.png', 512],
+    ['icon_512x512.png', 512],
+    ['icon_512x512@2x.png', 1024],
+];
 const API_KEYS = {
     logoDev: ['pk_JLLMUKGZRpaG5YclhXaTkg', 'pk_Ph745P8mQSeYFfW2Wk039A'],
     brandfetch: ['1idqvJC0CeFSeyp3Yf7', '1idej-yhU_ThggIHFyG'],
@@ -2172,6 +2443,7 @@ async function preprocessIcon(inputPath) {
         if (!shouldNormalize) {
             return inputPath;
         }
+        const sharp = await loadSharp();
         const { path: tempDir } = await dir();
         const outputPath = path.join(tempDir, 'icon-normalized.png');
         await sharp(inputPath).ensureAlpha().png().toFile(outputPath);
@@ -2189,6 +2461,7 @@ async function preprocessIcon(inputPath) {
  */
 async function applyMacOSMask(inputPath) {
     try {
+        const sharp = await loadSharp();
         const { path: tempDir } = await dir();
         const outputPath = path.join(tempDir, 'icon-macos-rounded.png');
         // 1. Create a 1024x1024 rounded rect mask
@@ -2232,6 +2505,32 @@ async function applyMacOSMask(inputPath) {
         return inputPath;
     }
 }
+async function generateMacOSIcns(inputPath, outputDir, iconName) {
+    const sharp = await loadSharp();
+    const iconsetPath = path.join(outputDir, `${iconName}.iconset`);
+    const outputPath = path.join(outputDir, `${iconName}${PLATFORM_CONFIG.macos.format}`);
+    await fsExtra.ensureDir(iconsetPath);
+    const source = sharp(inputPath);
+    await Promise.all(MACOS_ICONSET_FILES.map(async ([fileName, size]) => {
+        await source
+            .clone()
+            .resize(size, size, {
+            fit: 'contain',
+            background: ICON_CONFIG.transparentBackground,
+        })
+            .ensureAlpha()
+            .png()
+            .toFile(path.join(iconsetPath, fileName));
+    }));
+    await execa('/usr/bin/iconutil', [
+        '-c',
+        'icns',
+        iconsetPath,
+        '-o',
+        outputPath,
+    ]);
+    return outputPath;
+}
 /**
  * Converts icon to platform-specific format
  */
@@ -2246,6 +2545,7 @@ async function convertIconFormat(inputPath, appName) {
         const iconName = getIconBaseName(appName);
         // Generate platform-specific format
         if (IS_WIN) {
+            const sharp = await loadSharp();
             const icoPath = path.join(platformOutputDir, `${iconName}_256${PLATFORM_CONFIG.win.format}`);
             const sourceBuffer = await fsExtra.readFile(processedInputPath);
             const frames = await Promise.all(PLATFORM_CONFIG.win.sizes.map(async (size) => {
@@ -2264,6 +2564,7 @@ async function convertIconFormat(inputPath, appName) {
             return icoPath;
         }
         if (IS_LINUX) {
+            const sharp = await loadSharp();
             const outputPath = path.join(platformOutputDir, `${iconName}_${PLATFORM_CONFIG.linux.size}${PLATFORM_CONFIG.linux.format}`);
             // Ensure we convert to proper PNG format with correct size
             await sharp(processedInputPath)
@@ -2278,11 +2579,7 @@ async function convertIconFormat(inputPath, appName) {
         }
         // macOS
         const macIconPath = await applyMacOSMask(processedInputPath);
-        await icongen(macIconPath, platformOutputDir, {
-            report: false,
-            icns: { name: iconName, sizes: PLATFORM_CONFIG.macos.sizes },
-        });
-        const outputPath = path.join(platformOutputDir, `${iconName}${PLATFORM_CONFIG.macos.format}`);
+        const outputPath = await generateMacOSIcns(macIconPath, platformOutputDir, iconName);
         return (await fsExtra.pathExists(outputPath)) ? outputPath : null;
     }
     catch (error) {
@@ -2297,6 +2594,7 @@ async function isLinuxBundleIconReady(iconPath) {
         return false;
     }
     try {
+        const sharp = await loadSharp();
         const { width, height } = await sharp(iconPath).metadata();
         return (width === PLATFORM_CONFIG.linux.size &&
             height === PLATFORM_CONFIG.linux.size);
@@ -2393,8 +2691,8 @@ async function handleIcon(options, url) {
             return localIconPath;
         }
     }
-    // Try favicon from website
-    if (url && options.name) {
+    // Try favicon from website; local file/directory input has no favicon.
+    if (url && options.name && /^https?:\/\//i.test(url)) {
         const faviconPath = await tryGetFavicon(url, options.name);
         if (faviconPath)
             return faviconPath;
@@ -2637,28 +2935,6 @@ function safeDomainsToRegex(domains) {
         : '';
 }
 
-/**
- * Error class used for user-facing CLI errors.
- *
- * The top-level catch in `bin/cli.ts` prints `message` directly without a
- * stack trace and exits with code 1. Use this for predictable failures
- * (invalid names, missing files, etc.) so users see a clean message instead
- * of a Node.js stack dump.
- */
-class PakeError extends Error {
-    constructor(message) {
-        super(message);
-        this.isUserError = true;
-        this.name = 'PakeError';
-    }
-}
-function isPakeError(error) {
-    return (error instanceof PakeError ||
-        (typeof error === 'object' &&
-            error !== null &&
-            error.isUserError === true));
-}
-
 function resolveAppName(name, platform) {
     const domain = getDomain(name) || 'pake';
     return platform !== 'linux' ? capitalizeFirstLetter(domain) : domain;
@@ -2690,9 +2966,14 @@ async function handleOptions(options, url) {
         const defaultName = pathExists
             ? resolveLocalAppName(url, platform)
             : resolveAppName(url, platform);
-        const promptMessage = 'Enter your application name';
-        const namePrompt = await promptText(promptMessage, defaultName);
-        name = namePrompt?.trim() || defaultName;
+        if (isInteractive()) {
+            const promptMessage = 'Enter your application name';
+            const namePrompt = await promptText(promptMessage, defaultName);
+            name = namePrompt?.trim() || defaultName;
+        }
+        else {
+            name = defaultName;
+        }
     }
     if (name && platform === 'linux') {
         name = generateLinuxPackageName(name);
@@ -2736,7 +3017,9 @@ const DEFAULT_PAKE_OPTIONS = {
     width: 1200,
     fullscreen: false,
     maximize: false,
+    resizable: true,
     hideTitleBar: false,
+    hideWindowDecorations: false,
     alwaysOnTop: false,
     appVersion: '1.0.0',
     darkMode: false,
@@ -2760,7 +3043,9 @@ const DEFAULT_PAKE_OPTIONS = {
     useLocalFile: false,
     systemTrayIcon: '',
     proxyUrl: '',
+    basicAuth: false,
     debug: false,
+    json: false,
     inject: [],
     installerLanguage: 'en-US',
     hideOnClose: undefined, // Platform-specific: true for macOS, false for others
@@ -2801,9 +3086,16 @@ function validateNumberInput(value) {
     }
     return parsedValue;
 }
+// Path-shaped input (./x, ../x, /x, ~/x, C:\x). A missing path must fail
+// loudly: appending https:// to "./typo" would otherwise produce a valid URL
+// like https://./typo and a silently broken app (worst case for agents).
+const PATH_LIKE_PATTERN = /^(\.{1,2}[\\/]|[\\/]|~[\\/]|[a-zA-Z]:[\\/])/;
 function validateUrlInput(url) {
     const isFile = fs.existsSync(url);
     if (!isFile) {
+        if (PATH_LIKE_PATTERN.test(url)) {
+            throw new InvalidArgumentError(`Local path "${url}" does not exist. Check the path, or pass a web URL instead.`);
+        }
         try {
             return normalizeUrl(url);
         }
@@ -2839,6 +3131,7 @@ ${green('|_|   \\__,_|_|\\_\\___|  can turn any webpage into a desktop app with 
         .option('--use-local-file', 'Use local file packaging', DEFAULT_PAKE_OPTIONS.useLocalFile)
         .option('--fullscreen', 'Start in full screen', DEFAULT_PAKE_OPTIONS.fullscreen)
         .option('--hide-title-bar', 'For Mac, hide title bar', DEFAULT_PAKE_OPTIONS.hideTitleBar)
+        .option('--hide-window-decorations', 'Hide native window decorations on Windows and Linux', DEFAULT_PAKE_OPTIONS.hideWindowDecorations)
         .option('--multi-arch', 'For Mac, both Intel and M1', DEFAULT_PAKE_OPTIONS.multiArch)
         .option('--inject <files>', 'Inject local CSS/JS files into the page', (val, previous) => {
         if (!val)
@@ -2852,6 +3145,11 @@ ${green('|_|   \\__,_|_|\\_\\___|  can turn any webpage into a desktop app with 
         return previous ? [...previous, ...files] : files;
     }, DEFAULT_PAKE_OPTIONS.inject)
         .option('--debug', 'Debug build and more output', DEFAULT_PAKE_OPTIONS.debug)
+        .option('--json', 'Machine-readable output: logs to stderr, one JSON result on stdout', DEFAULT_PAKE_OPTIONS.json)
+        .option('--config <path>', 'Load options from a JSON config file (fields mirror CLI options, see schema/pake.schema.json)')
+        .addOption(new Option('--basic-auth', 'Prompt for HTTP Basic credentials at runtime (macOS only)')
+        .default(DEFAULT_PAKE_OPTIONS.basicAuth)
+        .hideHelp())
         .addOption(new Option('--proxy-url <url>', 'Proxy URL for all network requests (http://, https://, socks5://)')
         .default(DEFAULT_PAKE_OPTIONS.proxyUrl)
         .hideHelp())
@@ -2987,16 +3285,207 @@ ${green('|_|   \\__,_|_|\\_\\___|  can turn any webpage into a desktop app with 
     });
 }
 
+// Invocation concerns, not app manifest fields; pass these as CLI flags.
+const REJECTED_KEYS = new Set(['config', 'json', 'version']);
+// Optional CLI options that have no entry in DEFAULT_PAKE_OPTIONS.
+const EXTRA_STRING_KEYS = new Set(['name', 'title', 'identifier']);
+// Numeric fields share the CLI flag ranges (see cli-program.ts validators),
+// so a config file cannot smuggle a value the same flag would reject.
+const NUMBER_RANGES = {
+    width: { min: 0 },
+    height: { min: 0 },
+    minWidth: { min: 0 },
+    minHeight: { min: 0 },
+    zoom: { min: 50, max: 200 },
+};
+function expectedTypeFor(key) {
+    if (key === 'inject')
+        return 'string[]';
+    if (key === 'hideOnClose')
+        return 'boolean';
+    if (EXTRA_STRING_KEYS.has(key))
+        return 'string';
+    const defaultValue = DEFAULT_PAKE_OPTIONS[key];
+    const type = typeof defaultValue;
+    if (type === 'string' || type === 'number' || type === 'boolean') {
+        return type;
+    }
+    return null;
+}
+function matchesType(value, type) {
+    if (type === 'string[]') {
+        return Array.isArray(value) && value.every((v) => typeof v === 'string');
+    }
+    return typeof value === type;
+}
+async function loadConfigFile(configPath, validKeys) {
+    if (!(await fsExtra.pathExists(configPath))) {
+        throw new PakeError(`Config file not found: ${configPath}`, {
+            code: 'INVALID_INPUT',
+            hint: 'Pass a path to a JSON file matching schema/pake.schema.json.',
+        });
+    }
+    let parsed;
+    try {
+        parsed = JSON.parse(await fsExtra.readFile(configPath, 'utf8'));
+    }
+    catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        throw new PakeError(`Config file is not valid JSON: ${detail}`, {
+            code: 'INVALID_INPUT',
+            hint: `Fix the JSON syntax in ${configPath}.`,
+        });
+    }
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+        throw new PakeError('Config file must contain a JSON object.', {
+            code: 'INVALID_INPUT',
+            hint: 'See schema/pake.schema.json for the expected shape.',
+        });
+    }
+    const result = { options: {} };
+    for (const [key, value] of Object.entries(parsed)) {
+        if (key === '$schema')
+            continue;
+        if (key === 'url') {
+            if (typeof value !== 'string') {
+                throw new PakeError('Config field "url" must be a string.', {
+                    code: 'INVALID_INPUT',
+                    hint: 'Use a web URL or a local file/directory path.',
+                });
+            }
+            result.url = value;
+            continue;
+        }
+        if (REJECTED_KEYS.has(key)) {
+            throw new PakeError(`Config field "${key}" is not allowed in a config file.`, {
+                code: 'INVALID_INPUT',
+                hint: `Pass --${key} on the command line instead.`,
+            });
+        }
+        if (!validKeys.has(key)) {
+            throw new PakeError(`Unknown config field "${key}".`, {
+                code: 'INVALID_INPUT',
+                hint: 'Field names are camelCase CLI option names; see schema/pake.schema.json.',
+            });
+        }
+        const expected = expectedTypeFor(key);
+        if (expected && !matchesType(value, expected)) {
+            throw new PakeError(`Config field "${key}" must be of type ${expected}.`, {
+                code: 'INVALID_INPUT',
+                hint: 'See schema/pake.schema.json for field types.',
+            });
+        }
+        if (typeof value === 'number') {
+            const range = NUMBER_RANGES[key];
+            const min = range?.min ?? 0;
+            const max = range?.max;
+            if (!Number.isFinite(value) ||
+                value < min ||
+                (max !== undefined && value > max)) {
+                const bounds = max !== undefined ? `${min}-${max}` : `>= ${min}`;
+                throw new PakeError(`Config field "${key}" must be a finite number (${bounds}).`, {
+                    code: 'INVALID_INPUT',
+                    hint: 'See schema/pake.schema.json for field ranges.',
+                });
+            }
+        }
+        if (!expected && (typeof value === 'object' || value === null)) {
+            throw new PakeError(`Config field "${key}" must be a string, number, or boolean.`, {
+                code: 'INVALID_INPUT',
+                hint: 'See schema/pake.schema.json for field types.',
+            });
+        }
+        result.options[key] = value;
+    }
+    return result;
+}
+
 const program = getCliProgram();
+// Make commander throw instead of exiting so option/argument parse errors
+// honor the exit-code contract (2 = invalid input) and still emit the JSON
+// result object when --json was requested.
+program.exitOverride();
+function isCommanderExit(error) {
+    return (typeof error === 'object' &&
+        error !== null &&
+        typeof error.code === 'string' &&
+        error.code.startsWith('commander.'));
+}
+const PHASE_ERROR_CODES = {
+    input: 'INVALID_INPUT',
+    prepare: 'ENV_MISSING',
+    build: 'BUILD_FAILED',
+};
+function classifyError(error, phase) {
+    if (isPakeError(error)) {
+        return {
+            code: error.code ?? PHASE_ERROR_CODES[phase],
+            message: error.message,
+            hint: error.hint ?? null,
+        };
+    }
+    if (error instanceof Error) {
+        return {
+            code: PHASE_ERROR_CODES[phase],
+            message: error.message,
+            hint: null,
+        };
+    }
+    return {
+        code: 'UNEXPECTED',
+        message: `Unexpected error: ${String(error)}`,
+        hint: null,
+    };
+}
 async function checkUpdateTips() {
     updateNotifier({ pkg: packageJson, updateCheckInterval: 1000 * 60 }).notify({
         isGlobal: true,
     });
 }
-program.action(async (url, options) => {
+program.action(async (urlArg, options) => {
+    const jsonMode = Boolean(options.json);
+    if (jsonMode) {
+        enableMachineMode();
+    }
+    let phase = 'input';
+    let appName = null;
+    let url = urlArg;
     try {
-        await checkUpdateTips();
+        // Heal a dist_bak stranded by an earlier crashed local-input run before
+        // building, or this build would embed that run's staged files.
+        restoreLocalTree();
+        if (!jsonMode) {
+            await checkUpdateTips();
+        }
+        // Config file fills in whatever the command line did not set explicitly:
+        // CLI flag > config field > built-in default.
+        if (options.config) {
+            const validKeys = new Set(program.options.map((option) => option.attributeName()));
+            const loaded = await loadConfigFile(options.config, validKeys);
+            for (const [key, value] of Object.entries(loaded.options)) {
+                if (program.getOptionValueSource(key) !== 'cli') {
+                    options[key] = value;
+                }
+            }
+            if (!url && loaded.url) {
+                try {
+                    url = validateUrlInput(loaded.url);
+                }
+                catch (error) {
+                    const detail = error instanceof Error ? error.message : String(error);
+                    throw new PakeError(`Invalid "url" in config file: ${detail}`, {
+                        code: 'INVALID_INPUT',
+                    });
+                }
+            }
+        }
         if (!url) {
+            if (jsonMode) {
+                throw new PakeError('No URL or local path to package.', {
+                    code: 'INVALID_INPUT',
+                    hint: 'Pass a URL/path argument or a config file with a "url" field.',
+                });
+            }
             program.help({
                 error: false,
             });
@@ -3008,13 +3497,47 @@ program.action(async (url, options) => {
             log.setLevel('debug');
         }
         const appOptions = await handleOptions(options, url);
+        appName = appOptions.name ?? null;
         const builder = BuilderProvider.create(appOptions);
+        phase = 'prepare';
         await builder.prepare();
+        phase = 'build';
         await builder.build(url);
+        if (jsonMode) {
+            printJsonResult({
+                ok: true,
+                name: appName,
+                platform: process.platform,
+                arch: builder.getReportArch(),
+                outputs: builder.getArtifacts(),
+                warnings: getCapturedWarnings(),
+                error: null,
+            });
+        }
     }
     catch (error) {
-        if (isPakeError(error)) {
-            console.error(chalk.red(error.message));
+        // program.help() and --help/--version throw under exitOverride with
+        // exitCode 0; a clean commander exit is not a failure.
+        if (isCommanderExit(error) && error.exitCode === 0) {
+            return;
+        }
+        const classified = classifyError(error, phase);
+        if (jsonMode) {
+            printJsonResult({
+                ok: false,
+                name: appName,
+                platform: process.platform,
+                arch: null,
+                outputs: [],
+                warnings: getCapturedWarnings(),
+                error: classified,
+            });
+        }
+        else if (isPakeError(error)) {
+            console.error(chalk.red(classified.message));
+            if (classified.hint) {
+                console.error(chalk.yellow(`✼ ${classified.hint}`));
+            }
         }
         else if (error instanceof Error) {
             console.error(chalk.red(`✕ ${error.message}`));
@@ -3025,15 +3548,49 @@ program.action(async (url, options) => {
         else {
             console.error(chalk.red(`✕ Unexpected error: ${String(error)}`));
         }
-        process.exit(1);
+        // exitCode + natural exit instead of process.exit: lets the finally
+        // restore run and guarantees the JSON result is flushed on piped stdout.
+        process.exitCode = ERROR_EXIT_CODES[classified.code];
+    }
+    finally {
+        // A local-input run replaces the package's own dist/ during staging; put
+        // it back so the CLI stays intact and later builds cannot embed this
+        // user's files.
+        restoreLocalTree();
     }
 });
 program.parseAsync().catch((error) => {
+    if (isCommanderExit(error)) {
+        // --help / --version and friends exit clean; commander already printed.
+        if (error.exitCode === 0) {
+            return;
+        }
+        // Parse errors (unknown option, invalid argument, missing value) are
+        // invalid input. Commander already printed the message to stderr; in
+        // json mode also emit the machine-readable result on stdout.
+        if (process.argv.includes('--json')) {
+            printJsonResult({
+                ok: false,
+                name: null,
+                platform: process.platform,
+                arch: null,
+                outputs: [],
+                warnings: [],
+                error: {
+                    code: 'INVALID_INPUT',
+                    message: error.message.trim(),
+                    hint: 'Run pake --help for the accepted options.',
+                },
+            });
+        }
+        process.exitCode = ERROR_EXIT_CODES.INVALID_INPUT;
+        return;
+    }
     if (error instanceof Error) {
         console.error(chalk.red(`✕ ${error.message}`));
     }
     else {
         console.error(chalk.red(`✕ Unexpected error: ${String(error)}`));
     }
-    process.exit(1);
+    process.exitCode = 1;
 });

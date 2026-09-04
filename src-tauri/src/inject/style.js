@@ -240,19 +240,17 @@ window.addEventListener("DOMContentLoaded", (_event) => {
         position: fixed !important;
         top: 12px !important;
         right: 16px !important;
+        left: auto !important;
+        width: 182px !important;
       }
 
-      #react-root [data-testid="sidebarColumn"] input[placeholder="Search"] {
-        width: 150px;
+      #react-root [data-testid="sidebarColumn"] form[role="search"] input[data-testid="SearchBox_Search_Input"] {
+        width: 100% !important;
       }
 
       #react-root [data-testid="sidebarColumn"] form[role="search"]:focus-within {
         width: 280px !important;
         backdrop-filter: blur(12px) !important;
-      }
-
-      #react-root [data-testid="sidebarColumn"] input[placeholder="Search"]:focus {
-        width: 234px !important;
       }
     }
 
@@ -262,19 +260,17 @@ window.addEventListener("DOMContentLoaded", (_event) => {
         position: fixed !important;
         top: 12px !important;
         right: 16px !important;
+        left: auto !important;
+        width: 182px !important;
       }
 
-      #react-root [data-testid="sidebarColumn"] input[placeholder="Search"] {
-        width: 150px;
+      #react-root [data-testid="sidebarColumn"] form[role="search"] input[data-testid="SearchBox_Search_Input"] {
+        width: 100% !important;
       }
 
       #react-root [data-testid="sidebarColumn"] form[role="search"]:focus-within {
         width: 374px !important;
         backdrop-filter: blur(12px) !important;
-      }
-
-      #react-root [data-testid="sidebarColumn"] input[placeholder="Search"]:focus {
-        width: 328px !important;
       }
 
       #react-root div[style*="left: -12px"] {
@@ -403,6 +399,11 @@ window.addEventListener("DOMContentLoaded", (_event) => {
       padding-top: 0px;
     }
 
+    #notion-app .notion-sidebar,#notion-app .notion-topbar{
+      padding-top: 20px;
+      box-sizing: content-box;
+    }
+
     #header-area > div > .css-gtiexd > div:nth-child(1) > div, #header-area .logoIcon .user-info{
       padding-top: 20px;
     }
@@ -497,9 +498,29 @@ window.addEventListener("DOMContentLoaded", (_event) => {
     }
   `;
   const isMac = /Mac/i.test(navigator.userAgent);
-  if (window["pakeConfig"]?.hide_title_bar && isMac) {
+  if (hasImmersiveHeader(window["pakeConfig"])) {
     const topPaddingStyleElement = document.createElement("style");
-    topPaddingStyleElement.textContent = topPaddingCSS;
+    topPaddingStyleElement.textContent = isMac
+      ? topPaddingCSS
+      : `
+    #pake-top-dom:active {
+      cursor: grabbing;
+      cursor: -webkit-grabbing;
+    }
+
+    #pake-top-dom {
+      position: fixed;
+      background: transparent;
+      top: 0;
+      width: 100%;
+      height: 20px;
+      cursor: grab;
+      -webkit-app-region: drag;
+      user-select: none;
+      -webkit-user-select: none;
+      z-index: 99999;
+    }
+    `;
     document.head.appendChild(topPaddingStyleElement);
   }
 });

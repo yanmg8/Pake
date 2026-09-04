@@ -46,6 +46,11 @@ ${green('|_|   \\__,_|_|\\_\\___|  can turn any webpage into a desktop app with 
     )
     .option('--fullscreen', 'Start in full screen', DEFAULT.fullscreen)
     .option('--hide-title-bar', 'For Mac, hide title bar', DEFAULT.hideTitleBar)
+    .option(
+      '--hide-window-decorations',
+      'Hide native window decorations on Windows and Linux',
+      DEFAULT.hideWindowDecorations,
+    )
     .option('--multi-arch', 'For Mac, both Intel and M1', DEFAULT.multiArch)
     .option(
       '--inject <files>',
@@ -65,6 +70,23 @@ ${green('|_|   \\__,_|_|\\_\\___|  can turn any webpage into a desktop app with 
       DEFAULT.inject,
     )
     .option('--debug', 'Debug build and more output', DEFAULT.debug)
+    .option(
+      '--json',
+      'Machine-readable output: logs to stderr, one JSON result on stdout',
+      DEFAULT.json,
+    )
+    .option(
+      '--config <path>',
+      'Load options from a JSON config file (fields mirror CLI options, see schema/pake.schema.json)',
+    )
+    .addOption(
+      new Option(
+        '--basic-auth',
+        'Prompt for HTTP Basic credentials at runtime (macOS only)',
+      )
+        .default(DEFAULT.basicAuth)
+        .hideHelp(),
+    )
     .addOption(
       new Option(
         '--proxy-url <url>',

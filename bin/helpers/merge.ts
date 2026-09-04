@@ -17,6 +17,7 @@ import {
   WindowConfig,
 } from '@/types';
 import { tauriConfigDirectory, npmDirectory } from '@/utils/dir';
+import { PakeError } from '@/utils/error';
 import { LINUX_TARGET_TYPES, resolveLinuxBundleTargets } from '@/utils/targets';
 
 /**
@@ -33,6 +34,8 @@ export function buildWindowConfigOverrides(
   const platformHideOnClose = options.hideOnClose ?? platform === 'darwin';
   const platformHideTitleBar =
     platform === 'darwin' ? options.hideTitleBar : false;
+  const platformHideWindowDecorations =
+    platform !== 'darwin' ? options.hideWindowDecorations : false;
   return {
     width: options.width,
     height: options.height,
@@ -40,6 +43,7 @@ export function buildWindowConfigOverrides(
     maximize: options.maximize,
     resizable: options.resizable ?? true,
     hide_title_bar: platformHideTitleBar,
+    hide_window_decorations: platformHideWindowDecorations,
     activation_shortcut: options.activationShortcut,
     always_on_top: options.alwaysOnTop,
     dark_mode: options.darkMode,
@@ -103,40 +107,133 @@ async function copyTemplateConfigs(): Promise<void> {
   );
 }
 
-async function handleLocalFile(
+// Replace the CLI's own dist/ with the user's static files while keeping the
+// build artifacts (cli.js) the packaged app does not need but the CLI does.
+// dist_bak always holds the ORIGINAL package dist: once it exists, later
+// stagings must not overwrite it with a previous user tree, or the original
+// files would be unrecoverable across repeated local builds.
+async function stageLocalTree(sourceDir: string): Promise<void> {
+  const distDir = path.join(npmDirectory, 'dist');
+  const distBakDir = path.join(npmDirectory, 'dist_bak');
+
+  // Resolve symlinked input up front: staging must produce a real copy, or
+  // the cli.js copy-back below would write through the link into the user's
+  // own directory.
+  const resolvedSource = await fsExtra.realpath(sourceDir);
+  const resolvedPackage = await fsExtra
+    .realpath(npmDirectory)
+    .catch(() => path.resolve(npmDirectory));
+  const packageDist = path.join(resolvedPackage, 'dist');
+  if (
+    resolvedSource === resolvedPackage ||
+    resolvedPackage.startsWith(resolvedSource + path.sep) ||
+    resolvedSource === packageDist ||
+    resolvedSource.startsWith(packageDist + path.sep)
+  ) {
+    throw new PakeError(
+      `Local input "${sourceDir}" contains the Pake CLI installation itself.`,
+      {
+        code: 'INVALID_INPUT',
+        hint: 'Point Pake at your built output directory, not at a directory containing pake-cli.',
+      },
+    );
+  }
+
+  try {
+    if (await fsExtra.pathExists(distBakDir)) {
+      fsExtra.removeSync(distDir);
+    } else {
+      fsExtra.moveSync(distDir, distBakDir);
+    }
+    fsExtra.copySync(resolvedSource, distDir, {
+      overwrite: true,
+      dereference: true,
+    });
+
+    const filesToCopyBack = ['cli.js'];
+    await Promise.all(
+      filesToCopyBack.map((file) =>
+        fsExtra.copy(path.join(distBakDir, file), path.join(distDir, file)),
+      ),
+    );
+  } catch (error) {
+    // Never leave the package without its own dist/: cli.js lives there and
+    // every later `pake` invocation would fail until a manual reinstall.
+    restoreLocalTree();
+    throw error;
+  }
+}
+
+// Put the package's original dist/ back once a local-input run is over (or
+// failed). Tauri bakes `frontendDist: ../dist` into every binary, so a stale
+// staged tree would leak this user's files into the next app built from the
+// same install. Safe to call on any run: a present dist_bak always holds the
+// original package dist, including one stranded by an older crashed run.
+export function restoreLocalTree(): void {
+  const distDir = path.join(npmDirectory, 'dist');
+  const distBakDir = path.join(npmDirectory, 'dist_bak');
+  if (!fsExtra.pathExistsSync(distBakDir)) {
+    return;
+  }
+  try {
+    fsExtra.removeSync(distDir);
+    fsExtra.moveSync(distBakDir, distDir);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    logger.warn(
+      `Failed to restore the CLI's original dist/ from dist_bak: ${detail}`,
+    );
+  }
+}
+
+// Exported for unit tests (web fallback and directory entry guard).
+export async function handleLocalFile(
   url: string,
   useLocalFile: boolean,
   tauriConf: PakeTauriConfig,
 ): Promise<void> {
   const pathExists = await fsExtra.pathExists(url);
-  if (pathExists) {
-    logger.warn('✼ Your input might be a local file.');
+  if (!pathExists) {
+    tauriConf.pake.windows[0].url_type = 'web';
+    return;
+  }
 
-    const fileName = path.basename(url);
-    const dirName = path.dirname(url);
-    const distDir = path.join(npmDirectory, 'dist');
-    const distBakDir = path.join(npmDirectory, 'dist_bak');
+  const stat = await fsExtra.stat(url);
 
-    if (!useLocalFile) {
-      const urlPath = path.join(distDir, fileName);
-      await fsExtra.copy(url, urlPath);
-    } else {
-      fsExtra.moveSync(distDir, distBakDir, { overwrite: true });
-      fsExtra.copySync(dirName, distDir, { overwrite: true });
-
-      const filesToCopyBack = ['cli.js'];
-      await Promise.all(
-        filesToCopyBack.map((file) =>
-          fsExtra.copy(path.join(distBakDir, file), path.join(distDir, file)),
-        ),
+  if (stat.isDirectory()) {
+    // A directory of static web assets (e.g. a generated dist/): the whole
+    // tree is packaged and the app entry is its root index.html.
+    const entryFile = 'index.html';
+    if (!(await fsExtra.pathExists(path.join(url, entryFile)))) {
+      throw new PakeError(
+        `Local directory "${url}" has no ${entryFile} at its root.`,
+        {
+          code: 'INVALID_INPUT',
+          hint: 'Point Pake at the built output directory that contains index.html.',
+        },
       );
     }
-
-    tauriConf.pake.windows[0].url = fileName;
+    logger.info(`✺ Packaging local directory: ${url}`);
+    await stageLocalTree(url);
+    tauriConf.pake.windows[0].url = entryFile;
     tauriConf.pake.windows[0].url_type = 'local';
-  } else {
-    tauriConf.pake.windows[0].url_type = 'web';
+    return;
   }
+
+  logger.info(`✺ Packaging local file: ${url}`);
+
+  const fileName = path.basename(url);
+  const distDir = path.join(npmDirectory, 'dist');
+
+  if (!useLocalFile) {
+    const urlPath = path.join(distDir, fileName);
+    await fsExtra.copy(url, urlPath);
+  } else {
+    await stageLocalTree(path.dirname(url));
+  }
+
+  tauriConf.pake.windows[0].url = fileName;
+  tauriConf.pake.windows[0].url_type = 'local';
 }
 
 export function buildLinuxDesktopContent(
@@ -350,7 +447,8 @@ async function injectCustomCode(
   options: PakeAppOptions,
   tauriConf: PakeTauriConfig,
 ): Promise<void> {
-  const { inject, proxyUrl, multiInstance, multiWindow, wasm } = options;
+  const { inject, proxyUrl, basicAuth, multiInstance, multiWindow, wasm } =
+    options;
   const injectFilePath = path.join(
     npmDirectory,
     'src-tauri/src/inject/custom.js',
@@ -377,6 +475,7 @@ async function injectCustomCode(
   }
 
   tauriConf.pake.proxy_url = proxyUrl || '';
+  tauriConf.pake.basic_auth = basicAuth;
   tauriConf.pake.multi_instance = multiInstance;
   tauriConf.pake.multi_window = multiWindow;
 
@@ -475,6 +574,11 @@ export async function mergeConfig(
   if (options.hideTitleBar && platform !== 'darwin') {
     logger.warn(
       '✼ --hide-title-bar is only supported on macOS and will be ignored on this platform.',
+    );
+  }
+  if (options.hideWindowDecorations && platform === 'darwin') {
+    logger.warn(
+      '✼ --hide-window-decorations is only supported on Windows and Linux and will be ignored on this platform.',
     );
   }
   const tauriConfWindowOptions = buildWindowConfigOverrides(options, platform);

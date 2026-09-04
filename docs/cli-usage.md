@@ -6,7 +6,7 @@ Complete command-line reference and basic usage for Pake CLI.
 
 ## Installation
 
-Ensure that your Node.js version is 22.0 or higher (e.g., 22.11.0). _Note: Older versions ≥18.0.0 may also work._
+Ensure that your Node.js version is 22.0 or higher (e.g., 22.11.0). _Note: Older versions ≥20.0.0 may also work._
 
 **Recommended (pnpm):**
 
@@ -34,7 +34,7 @@ source ~/.bashrc
 
 **Prerequisites:**
 
-- Node.js ≥18.0.0
+- Node.js ≥20.0.0
 - Rust ≥1.85.0 (installed automatically if missing)
 - **macOS/Linux**: `curl`, `wget`, `file` and `tar` used for dependency management
 
@@ -66,22 +66,33 @@ The packaged application will be located in the current working directory by def
 
 ### [url]
 
-The URL is the link to the web page you want to package or the path to a local HTML file. This is mandatory.
+The URL is the link to the web page you want to package, the path to a local HTML file, or the path to a directory of static web files containing an `index.html` at its root (e.g. a `dist/` build output). Mandatory unless a `--config` file provides `url`.
+
+```shell
+pake https://example.com --name Example
+pake ./page.html --name MyPage
+pake ./dist --name MyTool
+```
+
+For local packaging, hash-based routing works out of the box; history-mode SPA routing is not yet supported.
 
 ### [options]
 
 Various options are available for customization. `pake --help` shows every supported CLI option. This page is the complete reference.
 
-| Option             | Description                                     | Example                                        |
-| ------------------ | ----------------------------------------------- | ---------------------------------------------- |
-| `--name`           | Application name                                | `--name "Weekly"`                              |
-| `--icon`           | Custom icon (optional, auto-fetch website icon) | `--icon https://cdn.tw93.fun/pake/weekly.icns` |
-| `--width`          | Window width (default: 1200px)                  | `--width 1400`                                 |
-| `--height`         | Window height (default: 780px)                  | `--height 900`                                 |
-| `--hide-title-bar` | Immersive header (macOS only)                   | `--hide-title-bar`                             |
-| `--debug`          | Enable development tools                        | `--debug`                                      |
-| `--help`           | Show all CLI options                            | `--help`                                       |
-| `--version`        | Show CLI version                                | `--version`                                    |
+| Option                      | Description                                         | Example                                        |
+| --------------------------- | --------------------------------------------------- | ---------------------------------------------- |
+| `--name`                    | Application name                                    | `--name "Weekly"`                              |
+| `--icon`                    | Custom icon (optional, auto-fetch website icon)     | `--icon https://cdn.tw93.fun/pake/weekly.icns` |
+| `--width`                   | Window width (default: 1200px)                      | `--width 1400`                                 |
+| `--height`                  | Window height (default: 780px)                      | `--height 900`                                 |
+| `--hide-title-bar`          | Immersive header (macOS only)                       | `--hide-title-bar`                             |
+| `--hide-window-decorations` | Hide native window decorations (Windows/Linux only) | `--hide-window-decorations`                    |
+| `--debug`                   | Enable development tools                            | `--debug`                                      |
+| `--config`                  | Load options from a JSON config file                | `--config app.json`                            |
+| `--json`                    | Machine-readable result on stdout (for automation)  | `--json`                                       |
+| `--help`                    | Show all CLI options                                | `--help`                                       |
+| `--version`                 | Show CLI version                                    | `--version`                                    |
 
 For complete options, see detailed sections below.
 
@@ -172,6 +183,14 @@ Enable or disable immersive header. Default is `false`. Use the following comman
 
 ```shell
 --hide-title-bar
+```
+
+#### [hide-window-decorations]
+
+Hide the native window decorations on Windows and Linux. Default is `false`. This removes the title bar and window controls, then adds a top drag region for moving the window. Use `F11` to toggle native fullscreen. Ignored on macOS.
+
+```shell
+--hide-window-decorations
 ```
 
 #### [fullscreen]
@@ -533,6 +552,8 @@ This is different from `--multi-instance`:
 
 When enabled, relaunching an already running app opens a new window instead of only focusing the existing one.
 
+On macOS, additional windows opened with Cmd+N join the app's native tab group. Web-auth and `window.open` popups remain separate.
+
 This can improve popup-based authentication flows, but it cannot bypass provider policy. Some providers, especially Google, may still reject sign-in inside embedded webviews.
 
 ```shell
@@ -553,6 +574,8 @@ Set the Windows Installer language. Options include `zh-CN`, `ja-JP`, More at [T
 #### [use-local-file]
 
 Enable recursive copying. When the URL is a local file path, enabling this option will copy the folder containing the file specified in the URL, as well as all sub-files, to the Pake static folder. This is disabled by default.
+
+Directory inputs (`pake ./dist`) always package the full tree; this flag only affects single-HTML-file inputs.
 
 ```shell
 --use-local-file
@@ -587,6 +610,14 @@ Set proxy server for all network requests. Supports HTTP, HTTPS, and SOCKS5. Ava
 --proxy-url socks5://127.0.0.1:7891
 ```
 
+#### [basic-auth]
+
+Prompt for HTTP Basic credentials when the target site requests them. This is only needed on macOS, where WKWebView does not provide its own 401 login dialog. Credentials are entered in the packaged app at runtime and are kept only for the current session.
+
+```shell
+--basic-auth
+```
+
 #### [debug]
 
 Enable developer tools and detailed logging for debugging.
@@ -594,6 +625,44 @@ Enable developer tools and detailed logging for debugging.
 ```shell
 --debug
 ```
+
+#### [config]
+
+Load options from a declarative JSON config file instead of assembling flags. Fields are the camelCase CLI option names plus `url`; the published schema is [schema/pake.schema.json](../schema/pake.schema.json). An explicit CLI flag always wins over a config field. Unknown fields, wrong types, and out-of-range numbers fail fast. A relative `url` path resolves against the current working directory, not the config file's location. Invocation flags (`--json`, `--config`, `--version`) are CLI-only and rejected inside the file.
+
+```shell
+--config <path>
+
+# app.json
+# {
+#   "$schema": "https://raw.githubusercontent.com/tw93/Pake/main/schema/pake.schema.json",
+#   "url": "https://example.com",
+#   "name": "MyApp",
+#   "width": 1280,
+#   "hideTitleBar": true
+# }
+pake --config app.json
+```
+
+#### [json]
+
+Machine-readable mode for scripts and AI agents. All logs move to stderr and stdout carries exactly one JSON result object; interactive prompts are disabled (they are also disabled whenever stdin is not a TTY).
+
+```shell
+--json
+
+# Success (stdout):
+# {"ok":true,"name":"MyApp","platform":"darwin","arch":"arm64",
+#  "outputs":[{"path":"/abs/MyApp.dmg","sizeBytes":5242880,"format":"dmg"}],
+#  "warnings":[],"error":null}
+#
+# Failure (stdout):
+# {"ok":false, ..., "error":{"code":"ENV_MISSING","message":"...","hint":"..."}}
+```
+
+Exit codes: `0` success, `2` invalid input, `3` build failure, `4` missing environment or dependency setup failure (e.g. Rust not installed, package install failed), `1` unexpected error. Error codes: `INVALID_INPUT`, `ENV_MISSING`, `BUILD_FAILED`, `UNEXPECTED`, plus `NETWORK` (reserved; current versions report network failures under the phase code).
+
+On Linux multi-target builds (e.g. `--targets deb,appimage`), `ok` can be true with fewer `outputs` than requested: a target that fails while others succeed is reported in `warnings`, not as a failure. Check `outputs[].format` against the formats you asked for.
 
 #### [ignore-certificate-errors]
 

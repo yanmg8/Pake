@@ -135,6 +135,17 @@ describe("Workflow path integration", () => {
       expect(workflow).toContain("Upload ZST (Linux)");
       expect(workflow).toContain("path: ${{ inputs.name }}-*.pkg.tar.zst");
     });
+
+    it("should forward the new-window input on every platform", () => {
+      const workflow = fs.readFileSync(
+        ".github/workflows/pake-cli.yaml",
+        "utf8",
+      );
+
+      expect(workflow).toContain("new_window:");
+      expect(workflow).toContain('ARGS+=("--new-window")');
+      expect(workflow).toContain('$args += "--new-window"');
+    });
   });
 
   describe("Architecture-specific paths", () => {
@@ -253,6 +264,20 @@ describe("Workflow path integration", () => {
       // After normalization, should use consistent separator
       const parts = normalized.split(path.sep);
       expect(parts.length).toBeGreaterThan(1);
+    });
+  });
+
+  describe("npm package boundaries", () => {
+    it("excludes generated Tauri build state from the shipped template", () => {
+      const ignoredPaths = fs
+        .readFileSync("src-tauri/.npmignore", "utf8")
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter((line) => line && !line.startsWith("#"));
+
+      expect(ignoredPaths).toEqual(
+        expect.arrayContaining([".pake/", "target/", ".cargo/config.toml"]),
+      );
     });
   });
 });
